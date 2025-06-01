@@ -41,7 +41,8 @@
           "bonjourServicesName": "awesome-chat",
           "localNetworkUsagePermissionText": "$(PRODUCT_NAME) need access to your local network to discover nearby devices"
         }
-      ],    [
+      ],
+      [
         "react-native-permissions",
         {
           "iosPermissions": [
@@ -49,7 +50,8 @@
             "Microphone"
           ]
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true

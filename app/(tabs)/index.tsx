@@ -11,6 +11,7 @@ import { PERMISSIONS, RESULTS, checkMultiple, requestMultiple } from "react-nati
 import { ThemedText } from "@/components/ThemedText"
 import { ThemedView } from "@/components/ThemedView"
 import { useColorScheme } from "@/hooks/useColorScheme"
+import { DeviceManager, type DeviceValidationResult } from "@/lib/deviceManager"
 import { supabase } from "@/lib/supabase"
 
 // Declare __DEV__ if it's not already defined
@@ -24,6 +25,7 @@ interface Student {
   roll_number: string
   program_id: string
   current_year: number
+  device_id?: string
 }
 
 async function checkAndRequestPermissions(): Promise<boolean> {
@@ -61,6 +63,7 @@ export default function HomeScreen() {
   const [user, setUser] = useState<User | null>(null)
   const [student, setStudent] = useState<Student | null>(null)
   const [loading, setLoading] = useState(true)
+  const [deviceValidation, setDeviceValidation] = useState<DeviceValidationResult | null>(null)
   const [broadcasting, setBroadcasting] = useState(false)
   const [permissionsGranted, setPermissionsGranted] = useState(false)
   const [myPeerId, setMyPeerId] = useState<string>("")
@@ -83,7 +86,7 @@ export default function HomeScreen() {
 
       if (session) {
         setUser(session.user)
-        await fetchStudentData(session.user.id)
+        await validateDeviceAndFetchStudent(session.user.id)
       } else {
         router.replace("/login")
       }
@@ -98,7 +101,7 @@ export default function HomeScreen() {
         setLoading(false)
         router.replace("/login")
       } else {
-        fetchStudentData(session.user.id)
+        validateDeviceAndFetchStudent(session.user.id)
       }
     })
 
@@ -128,7 +131,7 @@ export default function HomeScreen() {
 
   // Set up NearbyConnections listeners
   useEffect(() => {
-    if (!permissionsGranted) return
+    if (!permissionsGranted || !deviceValidation?.isValid) return
 
     // Listen for discovered peers (lecturers)
     const onPeerFoundListener = NearbyConnections.onPeerFound((data) => {
@@ -193,7 +196,48 @@ export default function HomeScreen() {
       onConnectedListener()
       onDisconnectedListener()
     }
-  }, [permissionsGranted, student])
+  }, [permissionsGranted, student, deviceValidation])
+
+  const validateDeviceAndFetchStudent = async (userId: string) => {
+    try {
+      setDebugInfo((prev) => prev + `\nValidating device for user: ${userId}`)
+
+      // Validate device first
+      const validation = await DeviceManager.validateDeviceForStudent(userId)
+      setDeviceValidation(validation)
+
+      setDebugInfo((prev) => prev + `\nDevice validation result: ${validation.isValid ? "Valid" : "Invalid"}`)
+      setDebugInfo((prev) => prev + `\nDevice ID: ${validation.deviceId}`)
+
+      if (!validation.isValid) {
+        Alert.alert("Device Not Authorized", validation.message, [
+          {
+            text: "Contact Admin",
+            onPress: () => {
+              // You can add contact admin functionality here
+              Alert.alert("Contact Admin", "Please contact your administrator to reset your device registration.")
+            },
+          },
+          {
+            text: "Logout",
+            style: "destructive",
+            onPress: async () => {
+              await supabase.auth.signOut()
+              router.replace("/login")
+            },
+          },
+        ])
+        return
+      }
+
+      // If device is valid, fetch student data
+      await fetchStudentData(userId)
+    } catch (error) {
+      console.error("Error in validateDeviceAndFetchStudent:", error)
+      setDebugInfo((prev) => prev + `\nError in device validation: ${error}`)
+      Alert.alert("Error", "Failed to validate device. Please try again.")
+    }
+  }
 
   const fetchStudentData = async (userId: string) => {
     try {
@@ -223,6 +267,11 @@ export default function HomeScreen() {
   }
 
   const startBroadcasting = async () => {
+    if (!deviceValidation?.isValid) {
+      Alert.alert("Device Not Authorized", "This device is not authorized for attendance. Please contact admin.")
+      return
+    }
+
     if (!permissionsGranted) {
       const granted = await checkAndRequestPermissions()
       if (!granted) {
@@ -393,6 +442,38 @@ export default function HomeScreen() {
     )
   }
 
+  // Show device validation error
+  if (deviceValidation && !deviceValidation.isValid) {
+    return (
+      <ThemedView style={styles.container}>
+        <View style={styles.errorContainer}>
+          <Ionicons name="warning" size={64} color="#EF4444" />
+          <ThemedText style={styles.errorTitle}>Device Not Authorized</ThemedText>
+          <ThemedText style={styles.errorText}>{deviceValidation.message}</ThemedText>
+          <View style={styles.errorButtons}>
+            <TouchableOpacity
+              style={styles.contactButton}
+              onPress={() => {
+                Alert.alert("Contact Admin", "Please contact your administrator to reset your device registration.")
+              }}
+            >
+              <ThemedText style={styles.contactButtonText}>Contact Admin</ThemedText>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.logoutButton}
+              onPress={async () => {
+                await supabase.auth.signOut()
+                router.replace("/login")
+              }}
+            >
+              <ThemedText style={styles.logoutButtonText}>Logout</ThemedText>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </ThemedView>
+    )
+  }
+
   return (
     <ThemedView style={styles.container}>
       {/* Header with menu button */}
@@ -401,6 +482,11 @@ export default function HomeScreen() {
           <Ionicons name="menu" size={24} color={colorScheme === "dark" ? "#fff" : "#000"} />
         </TouchableOpacity>
         <ThemedText style={styles.headerTitle}>Student Dashboard</ThemedText>
+        {deviceValidation?.isValid && (
+          <View style={styles.deviceStatus}>
+            <Ionicons name="checkmark-circle" size={20} color="#22C55E" />
+          </View>
+        )}
       </View>
 
       <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
@@ -412,6 +498,9 @@ export default function HomeScreen() {
               <ThemedText style={styles.studentName}>Name: {student.name}</ThemedText>
               <ThemedText style={styles.rollNumber}>Roll Number: {student.roll_number}</ThemedText>
               <ThemedText style={styles.year}>Year: {student.current_year}</ThemedText>
+              {deviceValidation?.deviceId && (
+                <ThemedText style={styles.deviceId}>Device: {deviceValidation.deviceId.substring(0, 8)}...</ThemedText>
+              )}
             </View>
           )}
         </View>
@@ -420,7 +509,7 @@ export default function HomeScreen() {
           style={[styles.attendanceButton, broadcasting && styles.stopButton]}
           onPress={broadcasting ? stopBroadcasting : startBroadcasting}
           activeOpacity={0.7}
-          disabled={!student}
+          disabled={!student || !deviceValidation?.isValid}
         >
           <Ionicons name={broadcasting ? "stop-circle" : "radio"} size={24} color="#ffffff" style={styles.buttonIcon} />
           <ThemedText style={styles.attendanceButtonText}>
@@ -481,6 +570,10 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 20,
     fontWeight: "bold",
+    flex: 1,
+  },
+  deviceStatus: {
+    marginLeft: 10,
   },
   content: {
     flex: 1,
@@ -515,6 +608,12 @@ const styles = StyleSheet.create({
   year: {
     fontSize: 14,
     opacity: 0.8,
+    marginBottom: 5,
+  },
+  deviceId: {
+    fontSize: 12,
+    opacity: 0.6,
+    fontFamily: "monospace",
   },
   attendanceButton: {
     flexDirection: "row",
@@ -560,6 +659,53 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600",
     flex: 1,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  errorTitle: {
+    fontSize: 24,
+    fontWeight: "bold",
+    marginTop: 20,
+    marginBottom: 16,
+    textAlign: "center",
+    color: "#EF4444",
+  },
+  errorText: {
+    fontSize: 16,
+    opacity: 0.7,
+    textAlign: "center",
+    marginBottom: 30,
+    lineHeight: 24,
+  },
+  errorButtons: {
+    flexDirection: "row",
+    gap: 15,
+  },
+  contactButton: {
+    backgroundColor: "#7C3AED",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  contactButtonText: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  logoutButton: {
+    backgroundColor: "#EF4444",
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  logoutButtonText: {
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
   },
   permissionContainer: {
     flex: 1,

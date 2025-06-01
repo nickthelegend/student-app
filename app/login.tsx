@@ -6,20 +6,21 @@ import { router } from "expo-router"
 import { StatusBar } from "expo-status-bar"
 import { useEffect, useState } from "react"
 import {
-    ActivityIndicator,
-    Alert,
-    Dimensions,
-    Keyboard,
-    KeyboardAvoidingView,
-    Platform,
-    StyleSheet,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native"
 
 import { ThemedText } from "@/components/ThemedText"
-import { supabase } from "@/lib/supabase"; // Import supabase client
+import { DeviceManager } from "@/lib/deviceManager"
+import { supabase } from "@/lib/supabase"
 import { FontAwesome5, MaterialIcons } from "@expo/vector-icons"
 
 const { width, height } = Dimensions.get("window")
@@ -42,8 +43,15 @@ export default function LoginScreen() {
       }
     })
 
-    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session) {
+        // Initialize device ID when user logs in
+        try {
+          const deviceId = await DeviceManager.getOrCreateDeviceId()
+          console.log("Device ID initialized on login:", deviceId)
+        } catch (error) {
+          console.error("Error initializing device ID:", error)
+        }
         router.replace("/(tabs)")
       }
     })
@@ -99,6 +107,10 @@ export default function LoginScreen() {
 
     setLoading(true)
     try {
+      // Initialize device ID before login
+      const deviceId = await DeviceManager.getOrCreateDeviceId()
+      console.log("Device ID before login:", deviceId)
+
       const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
@@ -112,8 +124,8 @@ export default function LoginScreen() {
         }
         Alert.alert("Login Error", error.message)
       } else {
-        // Navigate to the main app - onAuthStateChange will handle this
-        // router.replace("/(tabs)");
+        console.log("Login successful, device ID:", deviceId)
+        // Navigation will be handled by onAuthStateChange
       }
     } catch (error: any) {
       setGeneralError("An unexpected error occurred. Please try again.")
@@ -268,7 +280,7 @@ const styles = StyleSheet.create({
     marginRight: 15,
   },
   logoIcon: {
-    marginBottom: 0, // Adjusted if needed
+    marginBottom: 0,
   },
   logoTextContainer: {
     flexDirection: "column",
@@ -291,13 +303,12 @@ const styles = StyleSheet.create({
     maxWidth: 400,
     borderRadius: 20,
     padding: 30,
-    // backgroundColor: "rgba(255, 255, 255, 0.8)", // Handled by BlurView
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.3,
     shadowRadius: 20,
     elevation: 10,
-    overflow: "hidden", // Important for BlurView border radius
+    overflow: "hidden",
   },
   title: {
     fontSize: 24,
@@ -353,7 +364,7 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    height: "100%", // Ensure input takes full height of container
+    height: "100%",
     color: "#333",
     fontSize: 16,
   },
