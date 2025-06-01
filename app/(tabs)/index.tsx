@@ -1,19 +1,70 @@
 "use client"
 
 import type { User } from "@supabase/supabase-js"
+import * as NearbyConnections from "expo-nearby-connections"
 import { router } from "expo-router"
 import { useEffect, useState } from "react"
-import { ActivityIndicator, Alert, StyleSheet, TouchableOpacity, View } from "react-native"
+import { ActivityIndicator, Alert, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native"
+import { PERMISSIONS, RESULTS, checkMultiple, requestMultiple } from "react-native-permissions"
 
 import { ThemedText } from "@/components/ThemedText"
 import { ThemedView } from "@/components/ThemedView"
-import { Colors } from "@/constants/Colors"; // For button colors
 import { useColorScheme } from "@/hooks/useColorScheme"
 import { supabase } from "@/lib/supabase"
 
+// Declare __DEV__ if it's not already defined
+declare const __DEV__: boolean
+
+interface Student {
+  id: string
+  user_id: string
+  name: string
+  email: string
+  roll_number: string
+  program_id: string
+  current_year: number
+}
+
+async function checkAndRequestPermissions(): Promise<boolean> {
+  const permissions =
+    Platform.OS === "ios"
+      ? [PERMISSIONS.IOS.BLUETOOTH]
+      : [
+          PERMISSIONS.ANDROID.ACCESS_COARSE_LOCATION,
+          PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION,
+          PERMISSIONS.ANDROID.BLUETOOTH_ADVERTISE,
+          PERMISSIONS.ANDROID.BLUETOOTH_CONNECT,
+          PERMISSIONS.ANDROID.BLUETOOTH_SCAN,
+          PERMISSIONS.ANDROID.NEARBY_WIFI_DEVICES,
+        ]
+
+  try {
+    const statuses = await checkMultiple(permissions)
+    const allGranted = Object.values(statuses).every(
+      (status) => status === RESULTS.GRANTED || status === RESULTS.UNAVAILABLE || status === RESULTS.LIMITED,
+    )
+
+    if (allGranted) return true
+
+    const requestStatuses = await requestMultiple(permissions)
+    return Object.values(requestStatuses).every(
+      (status) => status === RESULTS.GRANTED || status === RESULTS.UNAVAILABLE || status === RESULTS.LIMITED,
+    )
+  } catch (error) {
+    console.error("Error checking permissions:", error)
+    return false
+  }
+}
+
 export default function HomeScreen() {
   const [user, setUser] = useState<User | null>(null)
+  const [student, setStudent] = useState<Student | null>(null)
   const [loading, setLoading] = useState(true)
+  const [broadcasting, setBroadcasting] = useState(false)
+  const [permissionsGranted, setPermissionsGranted] = useState(false)
+  const [myPeerId, setMyPeerId] = useState<string>("")
+  const [debugInfo, setDebugInfo] = useState<string>("")
+  const [hasPermissions, setHasPermissions] = useState(false)
   const colorScheme = useColorScheme()
 
   useEffect(() => {
@@ -31,6 +82,7 @@ export default function HomeScreen() {
 
       if (session) {
         setUser(session.user)
+        await fetchStudentData(session.user.id)
       } else {
         router.replace("/login")
       }
@@ -42,48 +94,309 @@ export default function HomeScreen() {
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
       if (!session) {
-        setLoading(false) // Stop loading if user logs out
+        setLoading(false)
         router.replace("/login")
+      } else {
+        fetchStudentData(session.user.id)
       }
     })
 
     return () => {
       authListener.subscription.unsubscribe()
+      if (broadcasting) {
+        stopBroadcasting()
+      }
     }
   }, [])
 
+  // Initialize permissions
+  useEffect(() => {
+    const initializePermissions = async () => {
+      const granted = await checkAndRequestPermissions()
+      setPermissionsGranted(granted)
+      setHasPermissions(granted)
+      if (!granted) {
+        setDebugInfo((prev) => prev + "\nPermissions not granted")
+      } else {
+        setDebugInfo((prev) => prev + "\nPermissions granted successfully")
+      }
+    }
+
+    initializePermissions()
+  }, [])
+
+  // Set up NearbyConnections listeners
+  useEffect(() => {
+    if (!permissionsGranted) return
+
+    // Listen for discovered peers (lecturers)
+    const onPeerFoundListener = NearbyConnections.onPeerFound((data) => {
+      console.log("Lecturer found:", data)
+      setDebugInfo((prev) => prev + `\nLecturer found: ${JSON.stringify(data)}`)
+    })
+
+    const onPeerLostListener = NearbyConnections.onPeerLost((data) => {
+      console.log("Lecturer lost:", data)
+      setDebugInfo((prev) => prev + `\nLecturer lost: ${JSON.stringify(data)}`)
+    })
+
+    // Listen for connection requests from lecturers
+    const onInvitationListener = NearbyConnections.onInvitationReceived((data) => {
+      console.log("Connection request from lecturer:", data)
+      setDebugInfo((prev) => prev + `\nConnection request from lecturer: ${JSON.stringify(data)}`)
+
+      Alert.alert(
+        "Attendance Request",
+        `Lecturer ${data.name} is requesting your attendance. Accept?`,
+        [
+          {
+            text: "Decline",
+            onPress: () => handleRejectConnection(data.peerId),
+            style: "cancel",
+          },
+          {
+            text: "Accept",
+            onPress: () => handleAcceptConnection(data.peerId),
+          },
+        ],
+        { cancelable: false },
+      )
+    })
+
+    const onConnectedListener = NearbyConnections.onConnected((data) => {
+      console.log("Connected to lecturer:", data)
+      setDebugInfo((prev) => prev + `\nConnected to lecturer: ${JSON.stringify(data)}`)
+
+      // Send roll number to lecturer
+      if (student?.roll_number) {
+        try {
+          NearbyConnections.sendText(data.peerId, student.roll_number)
+          setDebugInfo((prev) => prev + `\nSent roll number: ${student.roll_number}`)
+          Alert.alert("Attendance Sent", `Your roll number ${student.roll_number} has been sent to the lecturer.`)
+        } catch (error) {
+          console.error("Error sending roll number:", error)
+          setDebugInfo((prev) => prev + `\nError sending roll number: ${error}`)
+        }
+      }
+    })
+
+    const onDisconnectedListener = NearbyConnections.onDisconnected((data) => {
+      console.log("Disconnected from lecturer:", data)
+      setDebugInfo((prev) => prev + `\nDisconnected from lecturer: ${JSON.stringify(data)}`)
+    })
+
+    return () => {
+      onPeerFoundListener()
+      onPeerLostListener()
+      onInvitationListener()
+      onConnectedListener()
+      onDisconnectedListener()
+    }
+  }, [permissionsGranted, student])
+
+  const fetchStudentData = async (userId: string) => {
+    try {
+      setDebugInfo((prev) => prev + `\nFetching student data for user: ${userId}`)
+
+      const { data: studentData, error } = await supabase.from("students").select("*").eq("user_id", userId).single()
+
+      if (error) {
+        console.error("Error fetching student data:", error)
+        setDebugInfo((prev) => prev + `\nError fetching student data: ${error.message}`)
+        Alert.alert("Error", "Could not fetch student information. Please contact admin.")
+        return
+      }
+
+      if (studentData) {
+        setStudent(studentData)
+        setDebugInfo((prev) => prev + `\nStudent data loaded: ${studentData.roll_number}`)
+        console.log("Student data loaded:", studentData)
+      } else {
+        setDebugInfo((prev) => prev + `\nNo student record found for user: ${userId}`)
+        Alert.alert("Error", "No student record found. Please contact admin.")
+      }
+    } catch (error) {
+      console.error("Error in fetchStudentData:", error)
+      setDebugInfo((prev) => prev + `\nError in fetchStudentData: ${error}`)
+    }
+  }
+
+  const startBroadcasting = async () => {
+    if (!permissionsGranted) {
+      const granted = await checkAndRequestPermissions()
+      if (!granted) {
+        Alert.alert(
+          "Permissions Required",
+          "Please grant the required permissions in your device settings to use this feature.",
+        )
+        return
+      }
+      setPermissionsGranted(granted)
+    }
+
+    if (!student?.roll_number) {
+      Alert.alert("Error", "Student roll number not found. Please contact admin.")
+      return
+    }
+
+    try {
+      // First stop any existing broadcasting
+      await stopBroadcasting()
+
+      setDebugInfo((prev) => prev + "\nStarting attendance broadcasting...")
+      setBroadcasting(true)
+
+      // Use roll number as the service ID and name
+      const serviceId = `attendance_${student.roll_number}`
+      const displayName = `Student_${student.roll_number}`
+
+      setDebugInfo((prev) => prev + `\nUsing service ID: ${serviceId}`)
+      setDebugInfo((prev) => prev + `\nUsing display name: ${displayName}`)
+
+      // Start advertising with roll number
+      setTimeout(async () => {
+        try {
+          console.log("Starting advertising with roll number:", student.roll_number)
+          setDebugInfo((prev) => prev + `\nStarting advertising with roll number: ${student.roll_number}`)
+
+          const advertisePeerId = await NearbyConnections.startAdvertise(displayName)
+          setMyPeerId(advertisePeerId)
+          console.log("Started advertising with peerId:", advertisePeerId)
+          setDebugInfo((prev) => prev + `\nStarted advertising with peerId: ${advertisePeerId}`)
+
+          // Start discovery to find lecturers
+          setTimeout(async () => {
+            try {
+              console.log("Starting discovery for lecturers...")
+              setDebugInfo((prev) => prev + `\nStarting discovery for lecturers...`)
+
+              await NearbyConnections.startDiscovery(serviceId)
+              console.log("Discovery started successfully")
+              setDebugInfo((prev) => prev + `\nDiscovery started successfully`)
+
+              Alert.alert("Broadcasting Started", `Broadcasting attendance with roll number: ${student.roll_number}`)
+            } catch (discoveryError) {
+              console.error("Error starting discovery:", discoveryError)
+              setDebugInfo((prev) => prev + `\nError starting discovery: ${discoveryError}`)
+            }
+          }, 1000)
+        } catch (advertiseError) {
+          console.error("Error starting advertising:", advertiseError)
+          setDebugInfo((prev) => prev + `\nError starting advertising: ${advertiseError}`)
+          setBroadcasting(false)
+          Alert.alert("Error", "Failed to start broadcasting. Please try again.")
+        }
+      }, 1000)
+    } catch (error) {
+      console.error("Error in startBroadcasting:", error)
+      setDebugInfo((prev) => prev + `\nError in startBroadcasting: ${error}`)
+      setBroadcasting(false)
+      Alert.alert("Error", "Failed to start attendance broadcasting")
+    }
+  }
+
+  const stopBroadcasting = async () => {
+    try {
+      setDebugInfo((prev) => prev + `\nStopping broadcasting...`)
+
+      try {
+        await NearbyConnections.stopAdvertise()
+        console.log("Advertising stopped")
+        setDebugInfo((prev) => prev + `\nAdvertising stopped`)
+      } catch (advertiseError) {
+        console.error("Error stopping advertising:", advertiseError)
+        setDebugInfo((prev) => prev + `\nError stopping advertising: ${advertiseError}`)
+      }
+
+      try {
+        await NearbyConnections.stopDiscovery()
+        console.log("Discovery stopped")
+        setDebugInfo((prev) => prev + `\nDiscovery stopped`)
+      } catch (discoveryError) {
+        console.error("Error stopping discovery:", discoveryError)
+        setDebugInfo((prev) => prev + `\nError stopping discovery: ${discoveryError}`)
+      }
+
+      setBroadcasting(false)
+      Alert.alert("Broadcasting Stopped", "Attendance broadcasting has been stopped.")
+    } catch (error) {
+      console.error("Error in stopBroadcasting:", error)
+      setDebugInfo((prev) => prev + `\nError in stopBroadcasting: ${error}`)
+    }
+  }
+
+  const handleAcceptConnection = async (peerId: string) => {
+    try {
+      setDebugInfo((prev) => prev + `\nAccepting connection from: ${peerId}`)
+      await NearbyConnections.acceptConnection(peerId)
+      console.log("Connection accepted")
+    } catch (error) {
+      console.error("Error accepting connection:", error)
+      setDebugInfo((prev) => prev + `\nError accepting connection: ${error}`)
+      Alert.alert("Error", "Failed to accept connection")
+    }
+  }
+
+  const handleRejectConnection = async (peerId: string) => {
+    try {
+      setDebugInfo((prev) => prev + `\nRejecting connection from: ${peerId}`)
+      await NearbyConnections.rejectConnection(peerId)
+    } catch (error) {
+      console.error("Error rejecting connection:", error)
+      setDebugInfo((prev) => prev + `\nError rejecting connection: ${error}`)
+    }
+  }
+
   const handleLogout = async () => {
     setLoading(true)
+
+    // Stop broadcasting before logout
+    if (broadcasting) {
+      await stopBroadcasting()
+    }
+
     const { error } = await supabase.auth.signOut()
     if (error) {
       Alert.alert("Logout Error", error.message)
     }
-    // The onAuthStateChange listener will handle navigation to /login
     setLoading(false)
-  }
-
-  const handleGiveAttendance = () => {
-    // Placeholder for attendance logic
-    // You might navigate to another screen e.g. router.push('/class');
-    Alert.alert("Attendance", "Give Attendance button pressed!")
-    console.log("Give attendance pressed for user:", user?.email)
   }
 
   if (loading) {
     return (
       <ThemedView style={styles.centered}>
-        <ActivityIndicator size="large" color={Colors[colorScheme ?? "light"].tint} />
+        <ActivityIndicator size="large" color="#7C3AED" />
         <ThemedText>Loading...</ThemedText>
       </ThemedView>
     )
   }
 
   if (!user) {
-    // This case should ideally be handled by redirection,
-    // but as a fallback:
     return (
       <ThemedView style={styles.centered}>
         <ThemedText>No user session. Redirecting to login...</ThemedText>
+      </ThemedView>
+    )
+  }
+
+  if (!hasPermissions) {
+    return (
+      <ThemedView style={styles.container}>
+        <View style={styles.permissionContainer}>
+          <ThemedText style={styles.permissionTitle}>Permissions Required</ThemedText>
+          <ThemedText style={styles.permissionText}>
+            This app requires Bluetooth and Location permissions to broadcast attendance.
+          </ThemedText>
+          <TouchableOpacity
+            style={styles.permissionButton}
+            onPress={async () => {
+              const granted = await checkAndRequestPermissions()
+              setHasPermissions(granted)
+            }}
+          >
+            <ThemedText style={styles.permissionButtonText}>Grant Permissions</ThemedText>
+          </TouchableOpacity>
+        </View>
       </ThemedView>
     )
   }
@@ -93,18 +406,44 @@ export default function HomeScreen() {
       <View style={styles.headerContainer}>
         <ThemedText type="title">Welcome, Student!</ThemedText>
         {user?.email && <ThemedText type="default">Logged in as: {user.email}</ThemedText>}
+        {student && (
+          <View style={styles.studentInfo}>
+            <ThemedText style={styles.studentName}>Name: {student.name}</ThemedText>
+            <ThemedText style={styles.rollNumber}>Roll Number: {student.roll_number}</ThemedText>
+            <ThemedText style={styles.year}>Year: {student.current_year}</ThemedText>
+          </View>
+        )}
       </View>
 
       <TouchableOpacity
-        style={[styles.button, { backgroundColor: Colors[colorScheme ?? "light"].tint }]}
-        onPress={handleGiveAttendance}
+        style={[styles.attendanceButton, broadcasting && styles.stopButton]}
+        onPress={broadcasting ? stopBroadcasting : startBroadcasting}
         activeOpacity={0.7}
+        disabled={!student}
       >
-        <ThemedText style={styles.buttonText}>Give Attendance</ThemedText>
+        <ThemedText style={styles.attendanceButtonText}>
+          {broadcasting ? "Stop Broadcasting" : "Give Attendance"}
+        </ThemedText>
       </TouchableOpacity>
 
-      <TouchableOpacity style={[styles.button, styles.logoutButton]} onPress={handleLogout} activeOpacity={0.7}>
-        <ThemedText style={[styles.buttonText, styles.logoutButtonText]}>Logout</ThemedText>
+      {broadcasting && (
+        <View style={styles.broadcastingStatus}>
+          <ThemedText style={styles.broadcastingText}>
+            📡 Broadcasting attendance with roll number: {student?.roll_number}
+          </ThemedText>
+        </View>
+      )}
+
+      {/* Debug Info */}
+      {__DEV__ && (
+        <ScrollView style={styles.debugContainer}>
+          <Text style={styles.debugTitle}>Debug Info:</Text>
+          <Text style={styles.debugText}>{debugInfo}</Text>
+        </ScrollView>
+      )}
+
+      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout} activeOpacity={0.7}>
+        <ThemedText style={styles.logoutButtonText}>Logout</ThemedText>
       </TouchableOpacity>
     </ThemedView>
   )
@@ -119,36 +458,141 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     padding: 20,
-    justifyContent: "center", // Center content vertically
-    alignItems: "center", // Center content horizontally
+    justifyContent: "center",
+    alignItems: "center",
   },
   headerContainer: {
     alignItems: "center",
     marginBottom: 30,
   },
-  button: {
+  studentInfo: {
+    marginTop: 15,
+    padding: 15,
+    backgroundColor: "rgba(124, 58, 237, 0.1)",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(124, 58, 237, 0.3)",
+  },
+  studentName: {
+    fontSize: 16,
+    fontWeight: "600",
+    marginBottom: 5,
+  },
+  rollNumber: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#7C3AED",
+    marginBottom: 5,
+  },
+  year: {
+    fontSize: 14,
+    opacity: 0.8,
+  },
+  attendanceButton: {
     paddingVertical: 15,
     paddingHorizontal: 30,
-    borderRadius: 8,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    width: "80%", // Make buttons take more width
+    width: "80%",
     marginBottom: 15,
+    backgroundColor: "#7C3AED",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
   },
-  buttonText: {
-    color: "#fff", // Default text color for primary button
+  stopButton: {
+    backgroundColor: "#EF4444",
+  },
+  attendanceButtonText: {
+    color: "#ffffff",
     fontSize: 16,
     fontWeight: "bold",
   },
+  broadcastingStatus: {
+    padding: 15,
+    backgroundColor: "rgba(34, 197, 94, 0.1)",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.3)",
+    marginBottom: 15,
+    width: "90%",
+  },
+  broadcastingText: {
+    color: "#22C55E",
+    fontSize: 14,
+    fontWeight: "600",
+    textAlign: "center",
+  },
   logoutButton: {
-    backgroundColor: "#FF3B30", // A common color for destructive actions
+    paddingVertical: 12,
+    paddingHorizontal: 25,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    width: "60%",
+    backgroundColor: "#EF4444",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
   },
   logoutButtonText: {
-    color: "#fff", // Ensure text is visible on logout button
+    color: "#ffffff",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  permissionContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  permissionTitle: {
+    fontSize: 24,
+    fontWeight: "bold",
+    marginBottom: 16,
+    textAlign: "center",
+  },
+  permissionText: {
+    fontSize: 16,
+    opacity: 0.7,
+    textAlign: "center",
+    marginBottom: 24,
+  },
+  permissionButton: {
+    backgroundColor: "#7C3AED",
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  permissionButtonText: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  debugContainer: {
+    maxHeight: 150,
+    width: "100%",
+    marginVertical: 15,
+    padding: 12,
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.2)",
+  },
+  debugTitle: {
+    color: "#F59E0B",
+    fontSize: 14,
+    fontWeight: "bold",
+    marginBottom: 8,
+  },
+  debugText: {
+    color: "#4ADE80",
+    fontFamily: "monospace",
+    fontSize: 12,
   },
 })
