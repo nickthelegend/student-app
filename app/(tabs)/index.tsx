@@ -1,5 +1,6 @@
 "use client"
 
+import { Ionicons } from "@expo/vector-icons"
 import type { User } from "@supabase/supabase-js"
 import * as NearbyConnections from "expo-nearby-connections"
 import { router } from "expo-router"
@@ -347,19 +348,10 @@ export default function HomeScreen() {
     }
   }
 
-  const handleLogout = async () => {
-    setLoading(true)
-
-    // Stop broadcasting before logout
-    if (broadcasting) {
-      await stopBroadcasting()
+  const toggleDrawer = () => {
+    if (global.toggleDrawer) {
+      global.toggleDrawer()
     }
-
-    const { error } = await supabase.auth.signOut()
-    if (error) {
-      Alert.alert("Logout Error", error.message)
-    }
-    setLoading(false)
   }
 
   if (loading) {
@@ -403,48 +395,58 @@ export default function HomeScreen() {
 
   return (
     <ThemedView style={styles.container}>
-      <View style={styles.headerContainer}>
-        <ThemedText type="title">Welcome, Student!</ThemedText>
-        {user?.email && <ThemedText type="default">Logged in as: {user.email}</ThemedText>}
-        {student && (
-          <View style={styles.studentInfo}>
-            <ThemedText style={styles.studentName}>Name: {student.name}</ThemedText>
-            <ThemedText style={styles.rollNumber}>Roll Number: {student.roll_number}</ThemedText>
-            <ThemedText style={styles.year}>Year: {student.current_year}</ThemedText>
-          </View>
-        )}
+      {/* Header with menu button */}
+      <View style={styles.header}>
+        <TouchableOpacity style={styles.menuButton} onPress={toggleDrawer}>
+          <Ionicons name="menu" size={24} color={colorScheme === "dark" ? "#fff" : "#000"} />
+        </TouchableOpacity>
+        <ThemedText style={styles.headerTitle}>Student Dashboard</ThemedText>
       </View>
 
-      <TouchableOpacity
-        style={[styles.attendanceButton, broadcasting && styles.stopButton]}
-        onPress={broadcasting ? stopBroadcasting : startBroadcasting}
-        activeOpacity={0.7}
-        disabled={!student}
-      >
-        <ThemedText style={styles.attendanceButtonText}>
-          {broadcasting ? "Stop Broadcasting" : "Give Attendance"}
-        </ThemedText>
-      </TouchableOpacity>
-
-      {broadcasting && (
-        <View style={styles.broadcastingStatus}>
-          <ThemedText style={styles.broadcastingText}>
-            📡 Broadcasting attendance with roll number: {student?.roll_number}
-          </ThemedText>
+      <ScrollView style={styles.content} contentContainerStyle={styles.scrollContent}>
+        <View style={styles.welcomeContainer}>
+          <ThemedText type="title">Welcome, Student!</ThemedText>
+          {user?.email && <ThemedText type="default">Logged in as: {user.email}</ThemedText>}
+          {student && (
+            <View style={styles.studentInfo}>
+              <ThemedText style={styles.studentName}>Name: {student.name}</ThemedText>
+              <ThemedText style={styles.rollNumber}>Roll Number: {student.roll_number}</ThemedText>
+              <ThemedText style={styles.year}>Year: {student.current_year}</ThemedText>
+            </View>
+          )}
         </View>
-      )}
 
-      {/* Debug Info */}
-      {__DEV__ && (
-        <ScrollView style={styles.debugContainer}>
-          <Text style={styles.debugTitle}>Debug Info:</Text>
-          <Text style={styles.debugText}>{debugInfo}</Text>
-        </ScrollView>
-      )}
+        <TouchableOpacity
+          style={[styles.attendanceButton, broadcasting && styles.stopButton]}
+          onPress={broadcasting ? stopBroadcasting : startBroadcasting}
+          activeOpacity={0.7}
+          disabled={!student}
+        >
+          <Ionicons name={broadcasting ? "stop-circle" : "radio"} size={24} color="#ffffff" style={styles.buttonIcon} />
+          <ThemedText style={styles.attendanceButtonText}>
+            {broadcasting ? "Stop Broadcasting" : "Give Attendance"}
+          </ThemedText>
+        </TouchableOpacity>
 
-      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout} activeOpacity={0.7}>
-        <ThemedText style={styles.logoutButtonText}>Logout</ThemedText>
-      </TouchableOpacity>
+        {broadcasting && (
+          <View style={styles.broadcastingStatus}>
+            <Ionicons name="radio" size={20} color="#22C55E" style={styles.statusIcon} />
+            <ThemedText style={styles.broadcastingText}>
+              Broadcasting attendance with roll number: {student?.roll_number}
+            </ThemedText>
+          </View>
+        )}
+
+        {/* Debug Info */}
+        {__DEV__ && (
+          <View style={styles.debugContainer}>
+            <Text style={styles.debugTitle}>Debug Info:</Text>
+            <ScrollView style={styles.debugScroll} nestedScrollEnabled>
+              <Text style={styles.debugText}>{debugInfo}</Text>
+            </ScrollView>
+          </View>
+        )}
+      </ScrollView>
     </ThemedView>
   )
 }
@@ -457,11 +459,36 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    padding: 20,
-    justifyContent: "center",
-    alignItems: "center",
   },
-  headerContainer: {
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingTop: 60,
+    paddingBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(0,0,0,0.1)",
+  },
+  menuButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: "rgba(124, 58, 237, 0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 15,
+  },
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+  },
+  content: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: 20,
+  },
+  welcomeContainer: {
     alignItems: "center",
     marginBottom: 30,
   },
@@ -472,6 +499,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "rgba(124, 58, 237, 0.3)",
+    width: "100%",
   },
   studentName: {
     fontSize: 16,
@@ -489,12 +517,12 @@ const styles = StyleSheet.create({
     opacity: 0.8,
   },
   attendanceButton: {
+    flexDirection: "row",
     paddingVertical: 15,
     paddingHorizontal: 30,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    width: "80%",
     marginBottom: 15,
     backgroundColor: "#7C3AED",
     shadowColor: "#000",
@@ -506,44 +534,32 @@ const styles = StyleSheet.create({
   stopButton: {
     backgroundColor: "#EF4444",
   },
+  buttonIcon: {
+    marginRight: 10,
+  },
   attendanceButtonText: {
     color: "#ffffff",
     fontSize: 16,
     fontWeight: "bold",
   },
   broadcastingStatus: {
+    flexDirection: "row",
+    alignItems: "center",
     padding: 15,
     backgroundColor: "rgba(34, 197, 94, 0.1)",
     borderRadius: 10,
     borderWidth: 1,
     borderColor: "rgba(34, 197, 94, 0.3)",
     marginBottom: 15,
-    width: "90%",
+  },
+  statusIcon: {
+    marginRight: 10,
   },
   broadcastingText: {
     color: "#22C55E",
     fontSize: 14,
     fontWeight: "600",
-    textAlign: "center",
-  },
-  logoutButton: {
-    paddingVertical: 12,
-    paddingHorizontal: 25,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    width: "60%",
-    backgroundColor: "#EF4444",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  logoutButtonText: {
-    color: "#ffffff",
-    fontSize: 14,
-    fontWeight: "600",
+    flex: 1,
   },
   permissionContainer: {
     flex: 1,
@@ -575,9 +591,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   debugContainer: {
-    maxHeight: 150,
-    width: "100%",
-    marginVertical: 15,
+    marginTop: 20,
     padding: 12,
     backgroundColor: "rgba(0, 0, 0, 0.7)",
     borderRadius: 8,
@@ -589,6 +603,9 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "bold",
     marginBottom: 8,
+  },
+  debugScroll: {
+    maxHeight: 150,
   },
   debugText: {
     color: "#4ADE80",
