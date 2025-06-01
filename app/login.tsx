@@ -45,13 +45,6 @@ export default function LoginScreen() {
 
     const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session) {
-        // Initialize device ID when user logs in
-        try {
-          const deviceId = await DeviceManager.getOrCreateDeviceId()
-          console.log("Device ID initialized on login:", deviceId)
-        } catch (error) {
-          console.error("Error initializing device ID:", error)
-        }
         router.replace("/(tabs)")
       }
     })
@@ -102,34 +95,225 @@ export default function LoginScreen() {
     return isValid
   }
 
+  const checkDeviceConflicts = async (currentDeviceId: string, currentUserEmail: string) => {
+    try {
+      console.log("Checking device conflicts for device:", currentDeviceId)
+      console.log("Current user email:", currentUserEmail)
+
+      // Check if any students are already using this device ID
+      const { data: conflictingStudents, error } = await supabase
+        .from("students")
+        .select("id, name, email, roll_number, user_id, device_id")
+        .eq("device_id", currentDeviceId)
+
+      if (error) {
+        console.error("Error checking device conflicts:", error)
+        return {
+          hasConflict: false,
+          message: "Error checking device conflicts",
+        }
+      }
+
+      console.log("Found students with this device ID:", conflictingStudents)
+
+      if (!conflictingStudents || conflictingStudents.length === 0) {
+        console.log("No device conflicts found")
+        return {
+          hasConflict: false,
+          message: "No conflicts",
+        }
+      }
+
+      // Check if the current user is among the conflicting students
+      const currentUserStudent = conflictingStudents.find((student) => student.email === currentUserEmail)
+
+      if (conflictingStudents.length === 1 && currentUserStudent) {
+        // Only the current user has this device ID - no conflict
+        console.log("Device is registered to current user only")
+        return {
+          hasConflict: false,
+          message: "Device belongs to current user",
+        }
+      }
+
+      if (conflictingStudents.length > 1) {
+        // Multiple students have the same device ID - this is a conflict
+        console.log("Multiple students found with same device ID:", conflictingStudents.length)
+        const otherStudents = conflictingStudents.filter((student) => student.email !== currentUserEmail)
+
+        return {
+          hasConflict: true,
+          message: `Login denied. This device is already registered to ${otherStudents[0]?.name} (${otherStudents[0]?.roll_number}). Please login with the device you registered first or contact administrator.`,
+          conflictingStudents: otherStudents,
+        }
+      }
+
+      if (conflictingStudents.length === 1 && !currentUserStudent) {
+        // Device belongs to a different student
+        const otherStudent = conflictingStudents[0]
+        console.log("Device belongs to different student:", otherStudent.name)
+
+        return {
+          hasConflict: true,
+          message: `Login denied. This device is already registered to ${otherStudent.name} (${otherStudent.roll_number}). Please login with the device you registered first or contact administrator.`,
+          conflictingStudents: [otherStudent],
+        }
+      }
+
+      return {
+        hasConflict: false,
+        message: "No conflicts detected",
+      }
+    } catch (error) {
+      console.error("Error in checkDeviceConflicts:", error)
+      return {
+        hasConflict: false,
+        message: "Error checking conflicts",
+      }
+    }
+  }
+
   const handleLogin = async () => {
     if (!validateForm()) return
 
     setLoading(true)
     try {
-      // Initialize device ID before login
-      const deviceId = await DeviceManager.getOrCreateDeviceId()
-      console.log("Device ID before login:", deviceId)
+      // Get current device ID
+      const currentDeviceId = await DeviceManager.getOrCreateDeviceId()
+      console.log("Current device ID:", currentDeviceId)
 
-      const { data, error } = await supabase.auth.signInWithPassword({
+      // First, authenticate the user
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email,
         password,
       })
 
-      if (error) {
-        if (error.message.includes("Invalid login")) {
+      if (authError) {
+        if (authError.message.includes("Invalid login")) {
           setGeneralError("Invalid email or password")
         } else {
-          setGeneralError(error.message)
+          setGeneralError(authError.message)
         }
-        Alert.alert("Login Error", error.message)
-      } else {
-        console.log("Login successful, device ID:", deviceId)
-        // Navigation will be handled by onAuthStateChange
+        Alert.alert("Login Error", authError.message)
+        setLoading(false)
+        return
       }
+
+      if (!authData.user) {
+        setGeneralError("Authentication failed")
+        setLoading(false)
+        return
+      }
+
+      console.log("Authentication successful for user:", authData.user.email)
+
+      // Check for device conflicts before proceeding
+      const conflictCheck = await checkDeviceConflicts(currentDeviceId, authData.user.email!)
+
+      if (conflictCheck.hasConflict) {
+        console.log("Device conflict detected, signing out user")
+
+        // Sign out the user immediately
+        await supabase.auth.signOut()
+
+        // Show error message
+        Alert.alert(
+          "Login Denied",
+          conflictCheck.message,
+          [
+            {
+              text: "Contact Administrator",
+              onPress: () => {
+                Alert.alert(
+                  "Contact Administrator",
+                  "Please contact your administrator to resolve this device registration issue.",
+                )
+              },
+            },
+            {
+              text: "OK",
+              style: "default",
+            },
+          ],
+          { cancelable: false },
+        )
+
+        setGeneralError("Device conflict detected")
+        setLoading(false)
+        return
+      }
+
+      // No conflicts, check if user needs device registration
+      const { data: studentData, error: studentError } = await supabase
+        .from("students")
+        .select("id, name, email, roll_number, device_id")
+        .eq("user_id", authData.user.id)
+        .single()
+
+      if (studentError) {
+        console.error("Error fetching student data:", studentError)
+        await supabase.auth.signOut()
+        Alert.alert("Error", "Student record not found. Please contact administrator.")
+        setLoading(false)
+        return
+      }
+
+      if (!studentData) {
+        await supabase.auth.signOut()
+        Alert.alert("Error", "No student record found. Please contact administrator.")
+        setLoading(false)
+        return
+      }
+
+      // If student doesn't have a device ID, register current device
+      if (!studentData.device_id) {
+        console.log("Registering device for student:", studentData.name)
+
+        const { error: updateError } = await supabase
+          .from("students")
+          .update({
+            device_id: currentDeviceId,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("user_id", authData.user.id)
+
+        if (updateError) {
+          console.error("Error registering device:", updateError)
+          await supabase.auth.signOut()
+          Alert.alert("Error", "Failed to register device. Please try again.")
+          setLoading(false)
+          return
+        }
+
+        console.log("Device registered successfully for:", studentData.name)
+        Alert.alert("Device Registered", `Welcome ${studentData.name}! Your device has been registered successfully.`)
+      } else if (studentData.device_id === currentDeviceId) {
+        console.log("Device validation successful for:", studentData.name)
+      } else {
+        // This shouldn't happen due to our conflict check, but just in case
+        console.log("Device mismatch detected")
+        await supabase.auth.signOut()
+        Alert.alert(
+          "Device Not Authorized",
+          `This device is not registered for ${studentData.name}. Please use your registered device or contact administrator.`,
+        )
+        setLoading(false)
+        return
+      }
+
+      console.log("Login successful, proceeding to app")
+      // Navigation will be handled by onAuthStateChange
     } catch (error: any) {
+      console.error("Unexpected error during login:", error)
       setGeneralError("An unexpected error occurred. Please try again.")
       Alert.alert("Login Error", error.message || "An unexpected error occurred.")
+
+      // Sign out user in case of any error
+      try {
+        await supabase.auth.signOut()
+      } catch (signOutError) {
+        console.error("Error signing out after login failure:", signOutError)
+      }
     } finally {
       setLoading(false)
     }
@@ -152,7 +336,7 @@ export default function LoginScreen() {
             <FontAwesome5 name="user-check" size={40} color="#ffffff" style={styles.logoIcon} />
           </View>
           <View style={styles.logoTextContainer}>
-            <ThemedText style={styles.logoText}>Staff Attendance</ThemedText>
+            <ThemedText style={styles.logoText}>Student Attendance</ThemedText>
             <ThemedText style={styles.logoSubText}>Management System</ThemedText>
           </View>
         </View>
